@@ -5,6 +5,10 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   deploy:
     uses: mark-baumann/infrastruktur-deployment/.github/workflows/build-deploy.yml@master
