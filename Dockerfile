@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 ARG PORT=8520
+ENV PORT=$PORT
 EXPOSE $PORT
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
