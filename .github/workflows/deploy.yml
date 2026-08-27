@@ -2,24 +2,15 @@ name: Deploy
 
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    branches: [main, master]
   workflow_dispatch:
-    inputs:
-      service_name:
-        description: "Docker-Compose Service Name"
-        required: true
-        default: "schach-reinforcement-lernen"
-      port:
-        description: "Service Port"
-        required: true
-        default: "8520"
 
 jobs:
   deploy:
     uses: mark-baumann/infrastruktur-deployment/.github/workflows/build-deploy.yml@master
     with:
-      service_name: ${{ github.event.inputs.service_name || 'schach-reinforcement-lernen' }}
-      port: ${{ github.event.inputs.port || '8520' }}
+        service_name: schach
+        port: "8520"
+        app_file: app.py
+        healthcheck_type: http
     secrets: inherit
