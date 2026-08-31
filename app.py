@@ -205,7 +205,7 @@ def render_board(board: chess.Board, selected_sq=None, legal_targets=None):
         flipped=flipped,
         size=480,
     )
-    st.image(svg.encode(), use_container_width=False)
+    st.markdown(svg, unsafe_allow_html=True)
 
 
 # ── Game status check ──────────────────────────────────────────────────────────
