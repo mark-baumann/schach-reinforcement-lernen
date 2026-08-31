@@ -1,6 +1,7 @@
 import chess
 import chess.svg
 import streamlit as st
+import streamlit.components.v1 as components
 import random
 
 # ── Page config ────────────────────────────────────────────────────────────────
@@ -205,7 +206,7 @@ def render_board(board: chess.Board, selected_sq=None, legal_targets=None):
         flipped=flipped,
         size=480,
     )
-    st.image(svg.encode(), use_container_width=False)
+    components.html(f'<div style="display: flex; justify-content: center;">{svg}</div>', height=500)
 
 
 # ── Game status check ──────────────────────────────────────────────────────────
