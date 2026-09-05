@@ -283,15 +283,16 @@ render_board(board, selected, legal_targets)
 
 # Square input via text box
 st.write("")
-col1, col2, col3 = st.columns([2, 2, 1])
-with col1:
-    from_sq_str = st.text_input("Von (z.B. e2)", key="from_sq", placeholder="e2").strip().lower()
-with col2:
-    to_sq_str = st.text_input("Nach (z.B. e4)", key="to_sq", placeholder="e4").strip().lower()
-with col3:
-    st.write("")
-    st.write("")
-    move_btn = st.button("Zug", use_container_width=True)
+with st.form(key="move_form", clear_on_submit=True):
+    col1, col2, col3 = st.columns([2, 2, 1])
+    with col1:
+        from_sq_str = st.text_input("Von (z.B. e2)", placeholder="e2").strip().lower()
+    with col2:
+        to_sq_str = st.text_input("Nach (z.B. e4)", placeholder="e4").strip().lower()
+    with col3:
+        st.write("")
+        st.write("")
+        move_btn = st.form_submit_button("Zug", use_container_width=True)
 
 if move_btn and from_sq_str and to_sq_str and not st.session_state.game_over:
     try:
