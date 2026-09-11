@@ -1,8 +1,9 @@
+import json
+import random
+
 import chess
-import chess.svg
 import streamlit as st
 import streamlit.components.v1 as components
-import random
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Schach", page_icon="♟️", layout="centered")
@@ -11,8 +12,6 @@ st.set_page_config(page_title="Schach", page_icon="♟️", layout="centered")
 def init_state():
     if "board" not in st.session_state:
         st.session_state.board = chess.Board()
-    if "selected" not in st.session_state:
-        st.session_state.selected = None
     if "player_color" not in st.session_state:
         st.session_state.player_color = chess.WHITE
     if "difficulty" not in st.session_state:
@@ -185,28 +184,186 @@ def best_ai_move(board: chess.Board, depth: int) -> chess.Move | None:
 
 # ── Board rendering ────────────────────────────────────────────────────────────
 
-def render_board(board: chess.Board, selected_sq=None, legal_targets=None):
-    arrows = []
+PIECE_UNICODE = {
+    (chess.PAWN, chess.WHITE): "♙",
+    (chess.KNIGHT, chess.WHITE): "♘",
+    (chess.BISHOP, chess.WHITE): "♗",
+    (chess.ROOK, chess.WHITE): "♖",
+    (chess.QUEEN, chess.WHITE): "♕",
+    (chess.KING, chess.WHITE): "♔",
+    (chess.PAWN, chess.BLACK): "♟",
+    (chess.KNIGHT, chess.BLACK): "♞",
+    (chess.BISHOP, chess.BLACK): "♝",
+    (chess.ROOK, chess.BLACK): "♜",
+    (chess.QUEEN, chess.BLACK): "♛",
+    (chess.KING, chess.BLACK): "♚",
+}
+
+
+def render_board(board: chess.Board):
+    """Render an interactive board that supports drag-and-drop as well as
+    click-to-move (the latter also works on touch devices, where native HTML5
+    drag-and-drop is unreliable).
+
+    Since components.html() cannot return values to Python directly, a chosen
+    move is sent back by navigating the parent page to `?move=<from><to>`,
+    which the main script reads via st.query_params on the next run.
+    """
+    player_color = st.session_state.player_color
+    game_over = st.session_state.game_over
+    flipped = player_color == chess.BLACK
+
+    files = "abcdefgh"
+    ranks = "12345678"
+    display_files = files[::-1] if flipped else files
+    display_ranks = ranks if flipped else ranks[::-1]
+
+    legal_moves_map = {}
+    if not game_over and board.turn == player_color:
+        for m in board.legal_moves:
+            frm = chess.square_name(m.from_square)
+            to = chess.square_name(m.to_square)
+            legal_moves_map.setdefault(frm, [])
+            if to not in legal_moves_map[frm]:
+                legal_moves_map[frm].append(to)
+
+    last_move_squares = set()
     if board.move_stack:
-        last = board.peek()
-        arrows.append(chess.svg.Arrow(last.from_square, last.to_square, color="#88888855"))
+        lm = board.peek()
+        last_move_squares = {chess.square_name(lm.from_square), chess.square_name(lm.to_square)}
 
-    fill = {}
-    if selected_sq is not None:
-        fill[selected_sq] = "#f6f669"
-    if legal_targets:
-        for sq in legal_targets:
-            fill[sq] = "#ccff88"
+    check_square = chess.square_name(board.king(board.turn)) if board.is_check() else None
 
-    flipped = st.session_state.player_color == chess.BLACK
-    svg = chess.svg.board(
-        board,
-        arrows=arrows,
-        fill=fill,
-        flipped=flipped,
-        size=480,
-    )
-    components.html(f'<div style="display: flex; justify-content: center;">{svg}</div>', height=500)
+    squares_html = []
+    for r_i, r in enumerate(display_ranks):
+        for f_i, f in enumerate(display_files):
+            name = f + r
+            sq = chess.parse_square(name)
+            piece = board.piece_at(sq)
+            piece_char = PIECE_UNICODE.get((piece.piece_type, piece.color), "") if piece else ""
+            is_light = (files.index(f) + ranks.index(r)) % 2 == 1
+
+            classes = ["sq", "light" if is_light else "dark"]
+            if name in last_move_squares:
+                classes.append("last-move")
+            if name == check_square:
+                classes.append("in-check")
+            if piece_char:
+                classes.append("occ")
+            draggable = "true" if name in legal_moves_map else "false"
+
+            coord = ""
+            if f_i == 0:
+                coord += f'<span class="coord rank">{r}</span>'
+            if r_i == 7:
+                coord += f'<span class="coord file">{f}</span>'
+
+            squares_html.append(
+                f'<div id="sq-{name}" class="{" ".join(classes)}" '
+                f'ondragover="allowDrop(event)" ondrop="dropPiece(event,\'{name}\')" '
+                f'onclick="trySquareClick(\'{name}\')">'
+                f'{coord}'
+                f'<span class="piece" draggable="{draggable}" '
+                f'ondragstart="dragStart(event,\'{name}\')" ondragend="onDragEnd()">{piece_char}</span>'
+                f'</div>'
+            )
+
+    legal_moves_json = json.dumps(legal_moves_map)
+
+    html = f"""
+    <style>
+      .board-wrap {{ display:flex; justify-content:center; font-family: -apple-system, sans-serif; }}
+      .board {{ display:grid; grid-template-columns: repeat(8, 58px); grid-template-rows: repeat(8, 58px);
+                border: 2px solid #3a2a1a; box-shadow: 0 2px 12px rgba(0,0,0,0.35); }}
+      .sq {{ position:relative; display:flex; align-items:center; justify-content:center;
+             font-size: 38px; user-select:none; }}
+      .light {{ background:#f0d9b5; }}
+      .dark {{ background:#b58863; }}
+      .sq.selected {{ box-shadow: inset 0 0 0 4px #f6f669; }}
+      .sq.last-move {{ background-image: linear-gradient(rgba(246,246,105,0.55), rgba(246,246,105,0.55)); }}
+      .sq.in-check {{ background-image: linear-gradient(rgba(230,30,30,0.6), rgba(230,30,30,0.6)); }}
+      .sq.target::after {{ content:""; position:absolute; width:16px; height:16px; border-radius:50%;
+             background: rgba(20,110,20,0.55); pointer-events:none; }}
+      .sq.target.occ::after {{ width:52px; height:52px; border-radius:50%; background:transparent;
+             border:4px solid rgba(200,30,30,0.55); pointer-events:none; }}
+      .piece {{ cursor: grab; z-index:2; }}
+      .piece:active {{ cursor: grabbing; }}
+      .coord {{ position:absolute; font-size:9px; opacity:0.6; pointer-events:none; }}
+      .coord.rank {{ top:2px; left:3px; }}
+      .coord.file {{ bottom:2px; right:3px; }}
+    </style>
+    <div class="board-wrap">
+      <div class="board">
+        {''.join(squares_html)}
+      </div>
+    </div>
+    <script>
+      const legalMoves = {legal_moves_json};
+      let selected = null;
+
+      function sqEl(name) {{ return document.getElementById('sq-' + name); }}
+
+      function clearHighlights() {{
+        document.querySelectorAll('.sq').forEach(el => el.classList.remove('selected', 'target'));
+      }}
+
+      function selectSquare(name) {{
+        clearHighlights();
+        selected = name;
+        sqEl(name).classList.add('selected');
+        (legalMoves[name] || []).forEach(t => sqEl(t).classList.add('target'));
+      }}
+
+      function deselect() {{
+        clearHighlights();
+        selected = null;
+      }}
+
+      function sendMove(from, to) {{
+        const url = new URL(window.parent.location.href);
+        url.searchParams.set('move', from + to);
+        window.parent.location.href = url.toString();
+      }}
+
+      function trySquareClick(name) {{
+        if (selected === null) {{
+          if (legalMoves[name]) selectSquare(name);
+        }} else if (selected === name) {{
+          deselect();
+        }} else if (legalMoves[selected] && legalMoves[selected].includes(name)) {{
+          sendMove(selected, name);
+        }} else if (legalMoves[name]) {{
+          selectSquare(name);
+        }} else {{
+          deselect();
+        }}
+      }}
+
+      function allowDrop(ev) {{ ev.preventDefault(); }}
+
+      function dragStart(ev, name) {{
+        if (!legalMoves[name]) {{ ev.preventDefault(); return; }}
+        ev.dataTransfer.setData('text/plain', name);
+        ev.dataTransfer.effectAllowed = 'move';
+        selectSquare(name);
+      }}
+
+      function onDragEnd() {{
+        deselect();
+      }}
+
+      function dropPiece(ev, name) {{
+        ev.preventDefault();
+        const from = ev.dataTransfer.getData('text/plain');
+        if (from && legalMoves[from] && legalMoves[from].includes(name)) {{
+          sendMove(from, name);
+        }} else {{
+          deselect();
+        }}
+      }}
+    </script>
+    """
+    components.html(html, height=520)
 
 
 # ── Game status check ──────────────────────────────────────────────────────────
@@ -246,15 +403,38 @@ with st.sidebar:
 
     if st.button("Neues Spiel"):
         st.session_state.board = chess.Board()
-        st.session_state.selected = None
         st.session_state.message = ""
         st.session_state.game_over = False
         st.rerun()
 
     st.divider()
-    st.caption("Klicke auf eine Figur, dann auf das Zielfeld um einen Zug zu machen.")
+    st.caption("Ziehe eine Figur per Drag & Drop, oder tippe Figur und Zielfeld nacheinander an.")
 
 board = st.session_state.board
+
+# Moves made via drag-and-drop / click-to-move arrive as a `move` query param
+# (components.html() can't return values to Python directly, so the board's
+# JS navigates the parent page with `?move=<from><to>` instead).
+qp_move = st.query_params.get("move")
+if qp_move:
+    st.query_params.clear()
+    if not st.session_state.game_over and len(qp_move) >= 4:
+        try:
+            from_sq = chess.parse_square(qp_move[:2])
+            to_sq = chess.parse_square(qp_move[2:4])
+            promotion = None
+            piece = board.piece_at(from_sq)
+            if piece and piece.piece_type == chess.PAWN:
+                if (piece.color == chess.WHITE and chess.square_rank(to_sq) == 7) or \
+                   (piece.color == chess.BLACK and chess.square_rank(to_sq) == 0):
+                    promotion = chess.QUEEN
+            move = chess.Move(from_sq, to_sq, promotion=promotion)
+            if move in board.legal_moves and board.turn == st.session_state.player_color:
+                board.push(move)
+                check_game_over()
+        except ValueError:
+            pass
+    st.rerun()
 
 # Show message
 if st.session_state.message:
@@ -273,13 +453,7 @@ if not st.session_state.game_over and board.turn == ai_color:
         check_game_over()
         st.rerun()
 
-# Compute legal targets for selected piece
-selected = st.session_state.selected
-legal_targets = None
-if selected is not None:
-    legal_targets = [m.to_square for m in board.legal_moves if m.from_square == selected]
-
-render_board(board, selected, legal_targets)
+render_board(board)
 
 # Square input via text box
 st.write("")
