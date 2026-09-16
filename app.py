@@ -1,9 +1,7 @@
-import json
 import random
 
 import chess
 import streamlit as st
-import streamlit.components.v1 as components
 
 # ── Page config ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Schach", page_icon="♟️", layout="centered")
@@ -14,8 +12,8 @@ def init_state():
         st.session_state.board = chess.Board()
     if "player_color" not in st.session_state:
         st.session_state.player_color = chess.WHITE
-    if "difficulty" not in st.session_state:
-        st.session_state.difficulty = 3
+    if "selected_square" not in st.session_state:
+        st.session_state.selected_square = None
     if "message" not in st.session_state:
         st.session_state.message = ""
     if "game_over" not in st.session_state:
@@ -184,30 +182,26 @@ def best_ai_move(board: chess.Board, depth: int) -> chess.Move | None:
 
 # ── Board rendering ────────────────────────────────────────────────────────────
 
-PIECE_UNICODE = {
-    (chess.PAWN, chess.WHITE): "♙",
-    (chess.KNIGHT, chess.WHITE): "♘",
-    (chess.BISHOP, chess.WHITE): "♗",
-    (chess.ROOK, chess.WHITE): "♖",
-    (chess.QUEEN, chess.WHITE): "♕",
-    (chess.KING, chess.WHITE): "♔",
-    (chess.PAWN, chess.BLACK): "♟",
-    (chess.KNIGHT, chess.BLACK): "♞",
-    (chess.BISHOP, chess.BLACK): "♝",
-    (chess.ROOK, chess.BLACK): "♜",
-    (chess.QUEEN, chess.BLACK): "♛",
-    (chess.KING, chess.BLACK): "♚",
+# Filled piece glyphs; the CSS colours them white/black per side so they stay
+# visible on both light and dark squares.
+PIECE_GLYPH = {
+    chess.PAWN: "♟",
+    chess.KNIGHT: "♞",
+    chess.BISHOP: "♝",
+    chess.ROOK: "♜",
+    chess.QUEEN: "♛",
+    chess.KING: "♚",
 }
 
 
 def render_board(board: chess.Board):
-    """Render an interactive board that supports drag-and-drop as well as
-    click-to-move (the latter also works on touch devices, where native HTML5
-    drag-and-drop is unreliable).
+    """Render the board as a native Streamlit grid of square buttons.
 
-    Since components.html() cannot return values to Python directly, a chosen
-    move is sent back by navigating the parent page to `?move=<from><to>`,
-    which the main script reads via st.query_params on the next run.
+    Klick-Zug: eine Figur antippen, dann das Zielfeld antippen. Das funktioniert
+    zuverlässig auf Desktop und Touch-Geräten, weil es ohne iframe/sandbox und
+    ohne JavaScript-Bridge auskommt (die frühere Drag-and-drop-Variante lief in
+    einem sandboxed components.html()-iframe, in dem das Senden des Zugs an die
+    Python-Seite blockiert wurde).
     """
     player_color = st.session_state.player_color
     game_over = st.session_state.game_over
@@ -227,6 +221,12 @@ def render_board(board: chess.Board):
             if to not in legal_moves_map[frm]:
                 legal_moves_map[frm].append(to)
 
+    selected = st.session_state.selected_square
+    if selected and selected not in legal_moves_map:
+        selected = None
+        st.session_state.selected_square = None
+    targets = legal_moves_map.get(selected, []) if selected else []
+
     last_move_squares = set()
     if board.move_stack:
         lm = board.peek()
@@ -234,136 +234,108 @@ def render_board(board: chess.Board):
 
     check_square = chess.square_name(board.king(board.turn)) if board.is_check() else None
 
-    squares_html = []
-    for r_i, r in enumerate(display_ranks):
-        for f_i, f in enumerate(display_files):
+    # ── Per-square CSS (colours, pieces, highlights) ─────────────────────────
+    css = [
+        ".stButton > button, .stButton button { border-radius: 0 !important; padding: 0 !important; "
+        "min-height: 52px; font-size: 30px; line-height: 1; }",
+        ".board-labels { font-size: 12px; color: #555; text-align: center; padding: 3px 0; }",
+    ]
+    for r in ranks:
+        for f in files:
             name = f + r
-            sq = chess.parse_square(name)
-            piece = board.piece_at(sq)
-            piece_char = PIECE_UNICODE.get((piece.piece_type, piece.color), "") if piece else ""
             is_light = (files.index(f) + ranks.index(r)) % 2 == 1
+            bg = "#f0d9b5" if is_light else "#b58863"
+            rule = f".st-key-sq_{name} button {{ background-color: {bg} !important; }}"
+            piece = board.piece_at(chess.parse_square(name))
+            if piece:
+                if piece.color == chess.WHITE:
+                    rule += f" color:#fafafa !important; text-shadow:0 1px 2px rgba(0,0,0,0.6) !important;"
+                else:
+                    rule += f" color:#181818 !important; text-shadow:0 1px 2px rgba(255,255,255,0.35) !important;"
+            css.append(rule)
+    for s in last_move_squares:
+        css.append(f".st-key-sq_{s} button {{ box-shadow: inset 0 0 0 3px rgba(230,190,60,0.9) !important; }}")
+    if check_square:
+        css.append(f".st-key-sq_{check_square} button {{ box-shadow: inset 0 0 0 4px rgba(200,30,30,0.85) !important; }}")
+    if selected:
+        css.append(f".st-key-sq_{selected} button {{ background-color: #f6f669 !important; "
+                   f"box-shadow: inset 0 0 0 3px rgba(0,0,0,0.25) !important; }}")
+    for t in targets:
+        css.append(f".st-key-sq_{t} button {{ box-shadow: inset 0 0 0 4px rgba(46,139,87,0.85) !important; }}")
 
-            classes = ["sq", "light" if is_light else "dark"]
-            if name in last_move_squares:
-                classes.append("last-move")
-            if name == check_square:
-                classes.append("in-check")
-            if piece_char:
-                classes.append("occ")
-            draggable = "true" if name in legal_moves_map else "false"
+    st.markdown("<style>" + "\n".join(css) + "</style>", unsafe_allow_html=True)
 
-            coord = ""
-            if f_i == 0:
-                coord += f'<span class="coord rank">{r}</span>'
-            if r_i == 7:
-                coord += f'<span class="coord file">{f}</span>'
+    clickable = not game_over and board.turn == player_color
+    clicked = None
 
-            squares_html.append(
-                f'<div id="sq-{name}" class="{" ".join(classes)}" '
-                f'ondragover="allowDrop(event)" ondrop="dropPiece(event,\'{name}\')" '
-                f'onclick="trySquareClick(\'{name}\')">'
-                f'{coord}'
-                f'<span class="piece" draggable="{draggable}" '
-                f'ondragstart="dragStart(event,\'{name}\')" ondragend="onDragEnd()">{piece_char}</span>'
-                f'</div>'
-            )
+    with st.container():
+        for r in display_ranks:
+            cols = st.columns([0.55] + [1] * 8, gap="small")
+            with cols[0]:
+                st.markdown(f'<div class="board-labels">{r}</div>', unsafe_allow_html=True)
+            for i, f in enumerate(display_files):
+                name = f + r
+                piece = board.piece_at(chess.parse_square(name))
+                label = PIECE_GLYPH[piece.piece_type] if piece else "\u00a0"
+                with cols[i + 1]:
+                    if st.button(label, key=f"sq_{name}", disabled=not clickable, use_container_width=True):
+                        clicked = name
+        cols = st.columns([0.55] + [1] * 8, gap="small")
+        with cols[0]:
+            st.markdown('<div class="board-labels"></div>', unsafe_allow_html=True)
+        for f in display_files:
+            with cols[display_files.index(f) + 1]:
+                st.markdown(f'<div class="board-labels">{f}</div>', unsafe_allow_html=True)
 
-    legal_moves_json = json.dumps(legal_moves_map)
+    if clicked:
+        handle_square_click(clicked, legal_moves_map)
 
-    html = f"""
-    <style>
-      .board-wrap {{ display:flex; justify-content:center; font-family: -apple-system, sans-serif; }}
-      .board {{ display:grid; grid-template-columns: repeat(8, 58px); grid-template-rows: repeat(8, 58px);
-                border: 2px solid #3a2a1a; box-shadow: 0 2px 12px rgba(0,0,0,0.35); }}
-      .sq {{ position:relative; display:flex; align-items:center; justify-content:center;
-             font-size: 38px; user-select:none; }}
-      .light {{ background:#f0d9b5; }}
-      .dark {{ background:#b58863; }}
-      .sq.selected {{ box-shadow: inset 0 0 0 4px #f6f669; }}
-      .sq.last-move {{ background-image: linear-gradient(rgba(246,246,105,0.55), rgba(246,246,105,0.55)); }}
-      .sq.in-check {{ background-image: linear-gradient(rgba(230,30,30,0.6), rgba(230,30,30,0.6)); }}
-      .sq.target::after {{ content:""; position:absolute; width:16px; height:16px; border-radius:50%;
-             background: rgba(20,110,20,0.55); pointer-events:none; }}
-      .sq.target.occ::after {{ width:52px; height:52px; border-radius:50%; background:transparent;
-             border:4px solid rgba(200,30,30,0.55); pointer-events:none; }}
-      .piece {{ cursor: grab; z-index:2; }}
-      .piece:active {{ cursor: grabbing; }}
-      .coord {{ position:absolute; font-size:9px; opacity:0.6; pointer-events:none; }}
-      .coord.rank {{ top:2px; left:3px; }}
-      .coord.file {{ bottom:2px; right:3px; }}
-    </style>
-    <div class="board-wrap">
-      <div class="board">
-        {''.join(squares_html)}
-      </div>
-    </div>
-    <script>
-      const legalMoves = {legal_moves_json};
-      let selected = null;
 
-      function sqEl(name) {{ return document.getElementById('sq-' + name); }}
+def apply_move(from_sq: str, to_sq: str) -> bool:
+    """Validate and apply a move (with automatic queen promotion for pawns)."""
+    board = st.session_state.board
+    try:
+        frm = chess.parse_square(from_sq)
+        to = chess.parse_square(to_sq)
+    except ValueError:
+        return False
+    promotion = None
+    piece = board.piece_at(frm)
+    if piece and piece.piece_type == chess.PAWN:
+        if (piece.color == chess.WHITE and chess.square_rank(to) == 7) or \
+           (piece.color == chess.BLACK and chess.square_rank(to) == 0):
+            promotion = chess.QUEEN
+    move = chess.Move(frm, to, promotion=promotion)
+    if move in board.legal_moves and board.turn == st.session_state.player_color:
+        board.push(move)
+        check_game_over()
+        return True
+    return False
 
-      function clearHighlights() {{
-        document.querySelectorAll('.sq').forEach(el => el.classList.remove('selected', 'target'));
-      }}
 
-      function selectSquare(name) {{
-        clearHighlights();
-        selected = name;
-        sqEl(name).classList.add('selected');
-        (legalMoves[name] || []).forEach(t => sqEl(t).classList.add('target'));
-      }}
-
-      function deselect() {{
-        clearHighlights();
-        selected = null;
-      }}
-
-      function sendMove(from, to) {{
-        const url = new URL(window.parent.location.href);
-        url.searchParams.set('move', from + to);
-        window.parent.location.href = url.toString();
-      }}
-
-      function trySquareClick(name) {{
-        if (selected === null) {{
-          if (legalMoves[name]) selectSquare(name);
-        }} else if (selected === name) {{
-          deselect();
-        }} else if (legalMoves[selected] && legalMoves[selected].includes(name)) {{
-          sendMove(selected, name);
-        }} else if (legalMoves[name]) {{
-          selectSquare(name);
-        }} else {{
-          deselect();
-        }}
-      }}
-
-      function allowDrop(ev) {{ ev.preventDefault(); }}
-
-      function dragStart(ev, name) {{
-        if (!legalMoves[name]) {{ ev.preventDefault(); return; }}
-        ev.dataTransfer.setData('text/plain', name);
-        ev.dataTransfer.effectAllowed = 'move';
-        selectSquare(name);
-      }}
-
-      function onDragEnd() {{
-        deselect();
-      }}
-
-      function dropPiece(ev, name) {{
-        ev.preventDefault();
-        const from = ev.dataTransfer.getData('text/plain');
-        if (from && legalMoves[from] && legalMoves[from].includes(name)) {{
-          sendMove(from, name);
-        }} else {{
-          deselect();
-        }}
-      }}
-    </script>
-    """
-    components.html(html, height=520)
+def handle_square_click(name: str, legal_moves_map: dict):
+    """Click-to-move logic: select a piece, then pick a legal target square."""
+    selected = st.session_state.selected_square
+    if selected is None:
+        if name in legal_moves_map:
+            st.session_state.selected_square = name
+            st.rerun()
+        return
+    if name == selected:
+        st.session_state.selected_square = None
+        st.rerun()
+        return
+    if name in legal_moves_map.get(selected, []):
+        apply_move(selected, name)
+        st.session_state.selected_square = None
+        st.rerun()
+        return
+    if name in legal_moves_map:
+        st.session_state.selected_square = name
+        st.rerun()
+        return
+    st.session_state.selected_square = None
+    st.rerun()
 
 
 # ── Game status check ──────────────────────────────────────────────────────────
@@ -395,46 +367,22 @@ st.title("♟️ Schach")
 
 with st.sidebar:
     st.header("Einstellungen")
-    color_choice = st.radio("Spielen als", ["Weiß", "Schwarz"], index=0)
+    color_choice = st.radio("Spielen als", ["Weiß", "Schwarz"], index=0, key="color_choice")
     st.session_state.player_color = chess.WHITE if color_choice == "Weiß" else chess.BLACK
 
-    diff = st.slider("KI-Stärke (Tiefe)", 1, 5, st.session_state.difficulty)
-    st.session_state.difficulty = diff
+    st.slider("KI-Stärke (Tiefe)", 1, 5, 3, key="difficulty")
 
-    if st.button("Neues Spiel"):
+    if st.button("Neues Spiel", key="new_game"):
         st.session_state.board = chess.Board()
         st.session_state.message = ""
         st.session_state.game_over = False
+        st.session_state.selected_square = None
         st.rerun()
 
     st.divider()
-    st.caption("Ziehe eine Figur per Drag & Drop, oder tippe Figur und Zielfeld nacheinander an.")
+    st.caption("Tippe eine Figur an und danach das Zielfeld (Klick-Zug, Desktop und Touch).")
 
 board = st.session_state.board
-
-# Moves made via drag-and-drop / click-to-move arrive as a `move` query param
-# (components.html() can't return values to Python directly, so the board's
-# JS navigates the parent page with `?move=<from><to>` instead).
-qp_move = st.query_params.get("move")
-if qp_move:
-    st.query_params.clear()
-    if not st.session_state.game_over and len(qp_move) >= 4:
-        try:
-            from_sq = chess.parse_square(qp_move[:2])
-            to_sq = chess.parse_square(qp_move[2:4])
-            promotion = None
-            piece = board.piece_at(from_sq)
-            if piece and piece.piece_type == chess.PAWN:
-                if (piece.color == chess.WHITE and chess.square_rank(to_sq) == 7) or \
-                   (piece.color == chess.BLACK and chess.square_rank(to_sq) == 0):
-                    promotion = chess.QUEEN
-            move = chess.Move(from_sq, to_sq, promotion=promotion)
-            if move in board.legal_moves and board.turn == st.session_state.player_color:
-                board.push(move)
-                check_game_over()
-        except ValueError:
-            pass
-    st.rerun()
 
 # Show message
 if st.session_state.message:
@@ -469,25 +417,11 @@ with st.form(key="move_form", clear_on_submit=True):
         move_btn = st.form_submit_button("Zug", use_container_width=True)
 
 if move_btn and from_sq_str and to_sq_str and not st.session_state.game_over:
-    try:
-        from_sq = chess.parse_square(from_sq_str)
-        to_sq = chess.parse_square(to_sq_str)
-        # Handle promotion
-        promotion = None
-        piece = board.piece_at(from_sq)
-        if piece and piece.piece_type == chess.PAWN:
-            if (piece.color == chess.WHITE and chess.square_rank(to_sq) == 7) or \
-               (piece.color == chess.BLACK and chess.square_rank(to_sq) == 0):
-                promotion = chess.QUEEN
-        move = chess.Move(from_sq, to_sq, promotion=promotion)
-        if move in board.legal_moves and board.turn == st.session_state.player_color:
-            board.push(move)
-            check_game_over()
-            st.rerun()
-        else:
-            st.error("Ungültiger Zug!")
-    except ValueError:
-        st.error("Ungültige Feldangabe (z.B. e2, d7)")
+    if apply_move(from_sq_str, to_sq_str):
+        st.session_state.selected_square = None
+        st.rerun()
+    else:
+        st.error("Ungültiger Zug!")
 
 # Move history
 with st.expander("Zughistorie"):
